@@ -32,6 +32,11 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+
+# gmail oauth tokens (never commit)
+/.secrets
+credentials*.json
 
 # vercel
 .vercel
