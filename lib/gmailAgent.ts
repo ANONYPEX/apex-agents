@@ -31,7 +31,7 @@ export interface RunResult {
 }
 
 export async function runAgent(agente: Agente): Promise<RunResult> {
-  const auth = getAuthorizedClient();
+  const auth = await getAuthorizedClient();
   const gmail = google.gmail({ version: "v1", auth });
 
   const labelId = await getOrCreateLabelId(gmail, agente.label);
