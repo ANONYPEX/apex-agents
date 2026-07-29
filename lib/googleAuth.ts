@@ -1,13 +1,13 @@
-import fs from "node:fs";
-import path from "node:path";
 import { google } from "googleapis";
+import { createSupabaseClient } from "@/lib/supabase";
 
 type OAuth2Client = InstanceType<typeof google.auth.OAuth2>;
 type Credentials = Parameters<OAuth2Client["setCredentials"]>[0];
 
-const TOKEN_PATH = path.join(process.cwd(), ".secrets", "gmail-tokens.json");
-
 const SCOPES = ["https://www.googleapis.com/auth/gmail.modify"];
+
+const OAUTH_PROVIDER = "google";
+const OAUTH_ACCOUNT = "default";
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -33,28 +33,62 @@ export function getAuthUrl(): string {
   });
 }
 
-function saveTokens(tokens: Credentials): void {
-  fs.mkdirSync(path.dirname(TOKEN_PATH), { recursive: true });
-  fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), "utf-8");
+async function saveTokens(tokens: Credentials): Promise<void> {
+  const supabase = createSupabaseClient();
+  const { error } = await supabase.from("oauth_tokens").upsert(
+    {
+      provider: OAUTH_PROVIDER,
+      account: OAUTH_ACCOUNT,
+      access_token: tokens.access_token ?? null,
+      refresh_token: tokens.refresh_token ?? null,
+      scope: tokens.scope ?? null,
+      token_type: tokens.token_type ?? null,
+      expiry_date: tokens.expiry_date ?? null,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "provider,account" }
+  );
+
+  if (error) {
+    throw new Error(`No se pudieron guardar los tokens de Gmail: ${error.message}`);
+  }
 }
 
-function loadTokens(): Credentials | null {
-  if (!fs.existsSync(TOKEN_PATH)) return null;
-  return JSON.parse(fs.readFileSync(TOKEN_PATH, "utf-8"));
+async function loadTokens(): Promise<Credentials | null> {
+  const supabase = createSupabaseClient();
+  const { data, error } = await supabase
+    .from("oauth_tokens")
+    .select("access_token, refresh_token, scope, token_type, expiry_date")
+    .eq("provider", OAUTH_PROVIDER)
+    .eq("account", OAUTH_ACCOUNT)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`No se pudieron leer los tokens de Gmail: ${error.message}`);
+  }
+  if (!data) return null;
+
+  return {
+    access_token: data.access_token ?? undefined,
+    refresh_token: data.refresh_token ?? undefined,
+    scope: data.scope ?? undefined,
+    token_type: data.token_type ?? undefined,
+    expiry_date: data.expiry_date ?? undefined,
+  };
 }
 
-export function hasStoredTokens(): boolean {
-  return fs.existsSync(TOKEN_PATH);
+export async function hasStoredTokens(): Promise<boolean> {
+  return (await loadTokens()) !== null;
 }
 
 export async function exchangeCodeForTokens(code: string): Promise<void> {
   const client = createOAuthClient();
   const { tokens } = await client.getToken(code);
-  saveTokens(tokens);
+  await saveTokens(tokens);
 }
 
-export function getAuthorizedClient(): OAuth2Client {
-  const tokens = loadTokens();
+export async function getAuthorizedClient(): Promise<OAuth2Client> {
+  const tokens = await loadTokens();
   if (!tokens) {
     throw new Error(
       "No hay tokens de Gmail guardados. Conecta la cuenta primero en /api/auth/login."
@@ -63,7 +97,9 @@ export function getAuthorizedClient(): OAuth2Client {
   const client = createOAuthClient();
   client.setCredentials(tokens);
   client.on("tokens", (newTokens) => {
-    saveTokens({ ...tokens, ...newTokens });
+    void saveTokens({ ...tokens, ...newTokens }).catch((err) => {
+      console.error("No se pudieron actualizar los tokens de Gmail:", err);
+    });
   });
   return client;
 }
